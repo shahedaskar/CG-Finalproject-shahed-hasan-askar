@@ -1,579 +1,618 @@
+// =======================
+// =======================
 #include <iostream>
 #include <cmath>
-#define GLEW_STATIC 
+#include <fstream>
+#include <cstdlib>
+#include <ctime>
+
+// مكتبات OpenGL
+#define GLEW_STATIC
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
 
+// مكتبات الرياضيات (GLM)
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
-// --- إعدادات النافذة ---
+// =======================
+// 🪟 إعدادات النافذة
+// =======================
 const unsigned int SCR_WIDTH = 800;
 const unsigned int SCR_HEIGHT = 600;
 
-// --- متغيرات الكاميرا والشخصية ---
-glm::vec3 cameraPos = glm::vec3(0.0f, 3.5f, 8.0f);
-glm::vec3 cameraFront = glm::vec3(0.0f, 0.0f, -1.0f);
-glm::vec3 cameraUp = glm::vec3(0.0f, 0.5f, 5.0f);
+// =======================
+//  اللاعب
+// =======================
+glm::vec3 cubePos(0.0f, 0.0f, 0.0f); // موقع المكعب
 
-// --- متغيرات الفأرة والزوايا ---
-bool firstMouse = true;
-float yaw = -90.0f;
-float pitch = 0.0f;
-float lastX = 800.0f / 2.0;
-float lastY = 600.0 / 2.0;
-
-// --- متغيرات الوقت ---
-float deltaTime = 0.0f;
+// =======================
+//  الوقت
+// =======================
+float deltaTime = 0.0f; // الفرق بين الفريمات
 float lastFrame = 0.0f;
-glm::vec3 cubePos = glm::vec3(0.0f, 0.0f,0.0f);
-//متغير السرعة
+
+// =======================
+//  السرعة والطريق
+// =======================
 float speed = 5.0f;
+float textureOffset = 0.0f; // لتحريك الطريق
+
+// =======================
+// حالة اللعبة
+// =======================
+bool gameOver = false;
+
+// =======================
+// 🪂 القفز
+// =======================
+bool isJumping = false;     // هل اللاعب يقفز
+float jumpVelocity = 0.0f;  // سرعة القفز
+float gravity = -18.0f;     // الجاذبية
+
+// =======================
+//  الحواجز
+// =======================
 const int obstacleCount = 20;
-glm::vec3 obstacles[20];
-//تحديد عرض الطريق
-float roadHalfWidth = 4.8f; // نص عرض الطريق
-float cubeHalf = 0.3f;      //
-float distanceTravelled = 0.001f;
-float cycleLength = 150.0f; // كل 50 وحدة مسافة = دورة كاملة
-//متغيرات العملات
+glm::vec3 obstacles[obstacleCount];
+
+// =======================
+// 🪙 العملات
+// =======================
 const int coinCount = 5;
 glm::vec3 coins[coinCount];
 bool coinActive[coinCount];
-int score=0;
+int score = 0;
 
-// --- نصوص المظلات (Shaders) المعدلة ---
-// Vertex Shader: الآن يستقبل اللون كمدخل ثاني (location = 1) ويمرره
-const char* vertexShaderSource = "#version 330 core\n"
+// =======================
+//  حدود الطريق
+// =======================
+float roadHalfWidth = 4.5f;
+float cubeHalf = 0.2f;
+
+// =======================
+//  Shader الأساسي
+// =======================
+const char* vertexShaderSource =
+"#version 330 core\n"
 "layout (location = 0) in vec3 aPos;\n"
 "layout (location = 1) in vec3 aColor;\n"
+"layout (location = 2) in vec2 aTexCoord;\n"
 "out vec3 ourColor;\n"
+"out vec2 TexCoord;\n"
 "uniform mat4 model;\n"
 "uniform mat4 view;\n"
 "uniform mat4 projection;\n"
+"uniform float offset;\n"
 "void main()\n"
 "{\n"
-"   gl_Position = projection * view * model * vec4(aPos, 1.0);\n"
-"   ourColor = aColor;\n"
-"}\0";
+"    // تحويل الإحداثيات لعالم 3D\n"
+"    gl_Position = projection * view * model * vec4(aPos, 1.0);\n"
+"    ourColor = aColor;\n"
+"\n"
+"    // تحريك التكستشر (الطريق)\n"
+"    TexCoord = vec2(aTexCoord.x, aTexCoord.y + offset);\n"
+"}\n";
 
-// Fragment Shader: الآن يستقبل اللون من Vertex Shader ويعرضه
-const char* fragmentShaderSource = "#version 330 core\n"
+// =======================
+//  Fragment Shader
+// =======================
+const char* fragmentShaderSource =
+"#version 330 core\n"
 "out vec4 FragColor;\n"
 "in vec3 ourColor;\n"
+"in vec2 TexCoord;\n"
+"uniform sampler2D texture1;\n"
+"uniform bool useTexture;\n"
 "void main()\n"
 "{\n"
-"   FragColor = vec4(ourColor, 1.0f);\n"
-"}\n\0";
+"    // إذا في texture نستخدمه\n"
+"    if(useTexture)\n"
+"        FragColor = texture(texture1, TexCoord);\n"
+"    else\n"
+"        FragColor = vec4(ourColor, 1.0);\n"
+"}\n";
 
-// --- التصاريح المسبقة للدوال ---
+// =======================
+//  Shader للـ HUD
+// =======================
+const char* hudVertexShader =
+"#version 330 core\n"
+"layout (location = 0) in vec2 aPos;\n"
+"void main()\n"
+"{\n"
+"    // رسم مباشر بدون كاميرا\n"
+"    gl_Position = vec4(aPos, 0.0, 1.0);\n"
+"}\n";
+
+const char* hudFragmentShader =
+"#version 330 core\n"
+"out vec4 FragColor;\n"
+"uniform vec3 hudColor;\n"
+"void main()\n"
+"{\n"
+"    // لون الشريط (أخضر/أحمر)\n"
+"    FragColor = vec4(hudColor, 1.0);\n"
+"}\n";
+
+// =======================
+//  تحميل Texture BMP
+// =======================
+unsigned int loadBMPTexture(const char* filename)
+{
+    unsigned char header[54];
+    unsigned int dataPos;
+    unsigned int width;
+    unsigned int height;
+    unsigned int imageSize;
+
+    std::ifstream file(filename, std::ios::binary);
+
+    if (!file)
+    {
+        std::cout << "Failed to open texture file\n";
+        return 0;
+    }
+
+    // قراءة الهيدر
+    file.read((char*)header, 54);
+
+    // استخراج معلومات الصورة
+    dataPos = *(int*)&(header[0x0A]);
+    imageSize = *(int*)&(header[0x22]);
+    width = *(int*)&(header[0x12]);
+    height = *(int*)&(header[0x16]);
+
+    if (imageSize == 0)
+        imageSize = width * height * 3;
+
+    if (dataPos == 0)
+        dataPos = 54;
+
+    unsigned char* data = new unsigned char[imageSize];
+
+    file.seekg(dataPos);
+    file.read((char*)data, imageSize);
+    file.close();
+
+    // إنشاء Texture
+    unsigned int textureID;
+    glGenTextures(1, &textureID);
+    glBindTexture(GL_TEXTURE_2D, textureID);
+
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0,
+        GL_BGR, GL_UNSIGNED_BYTE, data);
+
+    glGenerateMipmap(GL_TEXTURE_2D);
+
+    delete[] data;
+
+    return textureID;
+}
+// =======================
+// دوال التصريح
+// =======================
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
-//void mouse_callback(GLFWwindow* window, double xpos, double ypos);//
 void processInput(GLFWwindow* window);
+void resetGame();
 
 void resetGame()
 {
-    // رجّع اللاعب
     cubePos = glm::vec3(0.0f, 0.0f, 0.0f);
-
-    // رجّع السرعة
     speed = 5.0f;
+    textureOffset = 0.0f;
+    gameOver = false;
+    isJumping = false;
+    jumpVelocity = 0.0f;
+    score = 0;
 
-    // رجّع الحواجز
+    // توزيع الحواجز عشوائياً على 3 مسارات
     for (int i = 0; i < obstacleCount; i++)
     {
-        float z = -(i * 8.0f + 10.0f);
-
         int lane = rand() % 3;
+        obstacles[i] = glm::vec3((lane - 1) * 2.0f, 0.0f, -(i * 8.0f + 10.0f));
+    }
 
-        float x;
-        if (lane == 0) x = -2.0f;
-        else if (lane == 1) x = 0.0f;
-        else x = 2.0f;
-
-        obstacles[i] = glm::vec3(x, 0.0f, z);
+    // توزيع العملات عشوائياً على الطريق
+    for (int i = 0; i < coinCount; i++)
+    {
+        int lane = rand() % 3;
+        coins[i] = glm::vec3((lane - 1) * 2.0f, 0.4f, -(rand() % 50 + 20));
+        coinActive[i] = true;
     }
 }
 
+// =======================
 
+
+// =======================
+// البرنامج الرئيسي
+// =======================
 int main()
 {
-    // تهيئة مكتبة GLFW وإعداد النافذة
-    glfwInit();
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    srand((unsigned int)time(0));
 
-    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "مشروع الكاميرا والمكعب - ملون", NULL, NULL);
-    if (window == NULL)
-    {
-        std::cout << "فشل في إنشاء نافذة GLFW" << std::endl;
-        glfwTerminate();
-        return -1;
-    }
+    glfwInit();
+
+    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Game HUD Coins Jump", NULL, NULL);
     glfwMakeContextCurrent(window);
 
-    // ربط دوال الاستدعاء (Callbacks)
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
-    //glfwSetCursorPosCallback(window, mouse_callback);//
 
-    // إخفاء مؤشر الفأرة والتقاطه داخل النافذة
-    //glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);//
-
-    // تهيئة مكتبة GLEW
     glewExperimental = GL_TRUE;
-    if (glewInit() != GLEW_OK)
-    {
-        std::cout << "فشل في تهيئة مكتبة GLEW" << std::endl;
-        return -1;
-    }
+    glewInit();
 
-    // تفعيل اختبار العمق (Depth Testing)
     glEnable(GL_DEPTH_TEST);
 
-    // --- بناء المظلات (Compile Shaders) ---
-    unsigned int vertexShader = glCreateShader(GL_VERTEX_SHADER);
-    glShaderSource(vertexShader, 1, &vertexShaderSource, NULL);
-    glCompileShader(vertexShader);
+    // =======================
+    // إنشاء shader اللعبة
+    // =======================
+    unsigned int vs = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(vs, 1, &vertexShaderSource, NULL);
+    glCompileShader(vs);
 
-    unsigned int fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
-    glShaderSource(fragmentShader, 1, &fragmentShaderSource, NULL);
-    glCompileShader(fragmentShader);
+    unsigned int fs = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(fs, 1, &fragmentShaderSource, NULL);
+    glCompileShader(fs);
 
     unsigned int shaderProgram = glCreateProgram();
-    glAttachShader(shaderProgram, vertexShader);
-    glAttachShader(shaderProgram, fragmentShader);
+    glAttachShader(shaderProgram, vs);
+    glAttachShader(shaderProgram, fs);
     glLinkProgram(shaderProgram);
 
-    glDeleteShader(vertexShader);
-    glDeleteShader(fragmentShader);
+    // =======================
+    // إنشاء shader  HUD الـ
+    // =======================
+    unsigned int hvs = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(hvs, 1, &hudVertexShader, NULL);
+    glCompileShader(hvs);
 
-    // --- إعداد نقاط المكعب والألوان الجديدة ---
-    // كل سطر يمثل نقطة: 3 إحداثيات (x, y, z) + 3 ألوان (r, g, b)
-    float vertices[] = {
-        // الوجه الخلفي (أحمر)
-        -0.5f, -0.5f, -0.5f,  1.0f, 0.0f, 0.0f,
-         0.5f, -0.5f, -0.5f,  1.0f, 0.0f, 0.0f,
-         0.5f,  0.5f, -0.5f,  1.0f, 0.0f, 0.0f,
-         0.5f,  0.5f, -0.5f,  1.0f, 0.0f, 0.0f,
-        -0.5f,  0.5f, -0.5f,  1.0f, 0.0f, 0.0f,
-        -0.5f, -0.5f, -0.5f,  1.0f, 0.0f, 0.0f,
+    unsigned int hfs = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(hfs, 1, &hudFragmentShader, NULL);
+    glCompileShader(hfs);
 
-        // الوجه الأمامي (أخضر)
-        -0.5f, -0.5f,  0.5f,  0.0f, 1.0f, 0.0f,
-         0.5f, -0.5f,  0.5f,  0.0f, 1.0f, 0.0f,
-         0.5f,  0.5f,  0.5f,  0.0f, 1.0f, 0.0f,
-         0.5f,  0.5f,  0.5f,  0.0f, 1.0f, 0.0f,
-        -0.5f,  0.5f,  0.5f,  0.0f, 1.0f, 0.0f,
-        -0.5f, -0.5f,  0.5f,  0.0f, 1.0f, 0.0f,
+    unsigned int hudProgram = glCreateProgram();
+    glAttachShader(hudProgram, hvs);
+    glAttachShader(hudProgram, hfs);
+    glLinkProgram(hudProgram);
 
-        // الوجه الأيسر (أزرق)
-        -0.5f,  0.5f,  0.5f,  0.0f, 0.0f, 1.0f,
-        -0.5f,  0.5f, -0.5f,  0.0f, 0.0f, 1.0f,
-        -0.5f, -0.5f, -0.5f,  0.0f, 0.0f, 1.0f,
-        -0.5f, -0.5f, -0.5f,  0.0f, 0.0f, 1.0f,
-        -0.5f, -0.5f,  0.5f,  0.0f, 0.0f, 1.0f,
-        -0.5f,  0.5f,  0.5f,  0.0f, 0.0f, 1.0f,
+    // =======================
+    // بيانات المكعب للاعب والحواجز
+    // =======================
+    float cube[] = {
+        -0.5,-0.5,-0.5, 1,0,0,  0.5,-0.5,-0.5, 1,0,0,  0.5,0.5,-0.5, 1,0,0,
+         0.5,0.5,-0.5, 1,0,0, -0.5,0.5,-0.5, 1,0,0, -0.5,-0.5,-0.5, 1,0,0,
 
-        // الوجه الأيمن (أصفر)
-         0.5f,  0.5f,  0.5f,  1.0f, 1.0f, 0.0f,
-         0.5f,  0.5f, -0.5f,  1.0f, 1.0f, 0.0f,
-         0.5f, -0.5f, -0.5f,  1.0f, 1.0f, 0.0f,
-         0.5f, -0.5f, -0.5f,  1.0f, 1.0f, 0.0f,
-         0.5f, -0.5f,  0.5f,  1.0f, 1.0f, 0.0f,
-         0.5f,  0.5f,  0.5f,  1.0f, 1.0f, 0.0f,
+        -0.5,-0.5,0.5, 0,1,0,  0.5,-0.5,0.5, 0,1,0,  0.5,0.5,0.5, 0,1,0,
+         0.5,0.5,0.5, 0,1,0, -0.5,0.5,0.5, 0,1,0, -0.5,-0.5,0.5, 0,1,0,
 
-         // الوجه السفلي (سماوي)
-         -0.5f, -0.5f, -0.5f,  0.0f, 1.0f, 1.0f,
-          0.5f, -0.5f, -0.5f,  0.0f, 1.0f, 1.0f,
-          0.5f, -0.5f,  0.5f,  0.0f, 1.0f, 1.0f,
-          0.5f, -0.5f,  0.5f,  0.0f, 1.0f, 1.0f,
-         -0.5f, -0.5f,  0.5f,  0.0f, 1.0f, 1.0f,
-         -0.5f, -0.5f, -0.5f,  0.0f, 1.0f, 1.0f,
+        -0.5,0.5,0.5, 0,0,1, -0.5,0.5,-0.5, 0,0,1, -0.5,-0.5,-0.5, 0,0,1,
+        -0.5,-0.5,-0.5, 0,0,1, -0.5,-0.5,0.5, 0,0,1, -0.5,0.5,0.5, 0,0,1,
 
-         // الوجه العلوي (بنفسجي)
-         -0.5f,  0.5f, -0.5f,  1.0f, 0.0f, 1.0f,
-          0.5f,  0.5f, -0.5f,  1.0f, 0.0f, 1.0f,
-          0.5f,  0.5f,  0.5f,  1.0f, 0.0f, 1.0f,
-          0.5f,  0.5f,  0.5f,  1.0f, 0.0f, 1.0f,
-         -0.5f,  0.5f,  0.5f,  1.0f, 0.0f, 1.0f,
-         -0.5f,  0.5f, -0.5f,  1.0f, 0.0f, 1.0f
-    };
-    // --- بيانات الطريق: مستطيل طويل ---
-    float roadVertices[] = {
-        // x, y, z, r, g, b
-        -5.0f, -0.5f, 50.0f,  0.3f, 0.3f, 0.3f,  // أعلى يسار
-         5.0f, -0.5f, 50.0f,  0.3f, 0.3f, 0.3f,  // أعلى يمين
-         5.0f, -0.5f,-50.0f,  0.3f, 0.3f, 0.3f,  // أسفل يمين
+         0.5,0.5,0.5, 1,1,0,  0.5,0.5,-0.5, 1,1,0,  0.5,-0.5,-0.5, 1,1,0,
+         0.5,-0.5,-0.5, 1,1,0,  0.5,-0.5,0.5, 1,1,0,  0.5,0.5,0.5, 1,1,0,
 
-         5.0f, -0.5f,-50.0f,  0.3f, 0.3f, 0.3f,  // أسفل يمين
-        -5.0f, -0.5f,-50.0f,  0.3f, 0.3f, 0.3f,  // أسفل يسار
-        -5.0f, -0.5f, 50.0f,  0.3f, 0.3f, 0.3f   // أعلى يسار
+        -0.5,-0.5,-0.5, 0,1,1,  0.5,-0.5,-0.5, 0,1,1,  0.5,-0.5,0.5, 0,1,1,
+         0.5,-0.5,0.5, 0,1,1, -0.5,-0.5,0.5, 0,1,1, -0.5,-0.5,-0.5, 0,1,1,
+
+        -0.5,0.5,-0.5, 1,0,1,  0.5,0.5,-0.5, 1,0,1,  0.5,0.5,0.5, 1,0,1,
+         0.5,0.5,0.5, 1,0,1, -0.5,0.5,0.5, 1,0,1, -0.5,0.5,-0.5, 1,0,1
     };
 
-    unsigned int VBO, VAO;
-    glGenVertexArrays(1, &VAO);
-    glGenBuffers(1, &VBO);
+    // =======================
+    // بيانات الطريق
+    // =======================
+    float road[] = {
+        -5,-0.5, 50, 1,1,1, 0,10,
+         5,-0.5, 50, 1,1,1, 1,10,
+         5,-0.5,-50, 1,1,1, 1,0,
 
-    glBindVertexArray(VAO);
-    glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+         5,-0.5,-50, 1,1,1, 1,0,
+        -5,-0.5,-50, 1,1,1, 0,0,
+        -5,-0.5, 50, 1,1,1, 0,10
+    };
 
-    // 1. مؤشر الإحداثيات (الموقع)
-    // الخطوة (Stride) أصبحت 6 الآن بدلاً من 3 (3 إحداثيات + 3 ألوان)
+    // =======================
+    // مستطيل العملة
+    // =======================
+    float quad[] = {
+        -0.5f,  0.5f, 0.0f, 1,1,1, 0,1,
+         0.5f,  0.5f, 0.0f, 1,1,1, 1,1,
+         0.5f, -0.5f, 0.0f, 1,1,1, 1,0,
+
+         0.5f, -0.5f, 0.0f, 1,1,1, 1,0,
+        -0.5f, -0.5f, 0.0f, 1,1,1, 0,0,
+        -0.5f,  0.5f, 0.0f, 1,1,1, 0,1
+    };
+
+    // =======================
+    // مستطيل الHUD 
+    // =======================
+    float hud[] = {
+        -1.0f, 1.0f,
+         1.0f, 1.0f,
+         1.0f, 0.9f,
+
+         1.0f, 0.9f,
+        -1.0f, 0.9f,
+        -1.0f, 1.0f
+    };
+
+    // تجهيز VAO/VBO للمكعب
+    unsigned int cubeVAO, cubeVBO;
+    glGenVertexArrays(1, &cubeVAO);
+    glGenBuffers(1, &cubeVBO);
+
+    glBindVertexArray(cubeVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, cubeVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(cube), cube, GL_STATIC_DRAW);
+
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
 
-    // 2. مؤشر الألوان الجديد
-    // يبدأ من الإزاحة (Offset) رقم 3
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
     glEnableVertexAttribArray(1);
+
+    // تجهيز VAO/VBO للطريق
     unsigned int roadVAO, roadVBO;
     glGenVertexArrays(1, &roadVAO);
     glGenBuffers(1, &roadVBO);
 
     glBindVertexArray(roadVAO);
     glBindBuffer(GL_ARRAY_BUFFER, roadVBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(roadVertices), roadVertices, GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(road), road, GL_STATIC_DRAW);
 
-    // موقع الإحداثيات
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
 
-    // موقع اللون
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
     glEnableVertexAttribArray(1);
-    glEnable(GL_DEPTH_TEST);
 
-    // --- حلقة الرسم الأساسية (Render Loop) ---
-    glm::vec3 cubePosition = glm::vec3(0.0f, 0.0f, 0.0f); // x, y, z
-    float moveSpeed = 2.5f; // سرعة الحركة
-    unsigned int modelLoc;
-    
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
+    glEnableVertexAttribArray(2);
 
-    for (int i = 0; i < obstacleCount; i++)
-{
-    float z = - (i * 6.0f + 2.0f); // مسافة بين كل حاجز
+    // تجهيز VAO/VBO للعملات
+    unsigned int quadVAO, quadVBO;
+    glGenVertexArrays(1, &quadVAO);
+    glGenBuffers(1, &quadVBO);
 
-    int lane = rand() % 3; // 0 أو 1 أو 2
+    glBindVertexArray(quadVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, quadVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
 
-    float x;
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
 
-    if (lane == 0) x = -2.0f; // يسار
-    else if (lane == 1) x = 0.0f; // وسط
-    else x = 2.0f; // يمين
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
 
-    obstacles[i]= glm::vec3(x, 0.0f, z);
-}
-    //تهيئة العملات
-    for (int i = 0; i < coinCount; i++)
-    {
-        coins[i].z = -(rand() % 50 + 20); // بعيد قدام
-        coins[i].y = 0.0f;
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
+    glEnableVertexAttribArray(2);
 
-        int lane = rand() % 3;
+    // تجهيز VAO/VBO للـ HUD
+    unsigned int hudVAO, hudVBO;
+    glGenVertexArrays(1, &hudVAO);
+    glGenBuffers(1, &hudVBO);
 
-        if (lane == 0) coins[i].x = -2.0f;
-        else if (lane == 1) coins[i].x = 0.0f;
-        else coins[i].x = 2.0f;
+    glBindVertexArray(hudVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, hudVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(hud), hud, GL_STATIC_DRAW);
 
-        coinActive[i] = true;
-    }
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
 
+    // تحميل الصور
+    unsigned int roadTexture = loadBMPTexture("road.bmp");
+    unsigned int coinTexture = loadBMPTexture("coin.bmp");
 
+    resetGame();
 
-    float cycleLength = 40.0f; // طول الدورة (ليل + نهار)
-  
+    // =======================
+    // حلقة اللعبة
+    // =======================
     while (!glfwWindowShouldClose(window))
-    {//حساب الوقت
+    {
         float currentFrame = static_cast<float>(glfwGetTime());
         deltaTime = currentFrame - lastFrame;
-        speed += 0.5f * deltaTime;
         lastFrame = currentFrame;
-        distanceTravelled += speed * deltaTime;
-        
+
+        processInput(window);
+
+        if (!gameOver)
+        {
+            speed += 0.5f * deltaTime;
+            textureOffset += speed * deltaTime * 0.5f;
+
+            // تطبيق القفز والجاذبية
+            if (isJumping)
+            {
+                cubePos.y += jumpVelocity * deltaTime;
+                jumpVelocity += gravity * deltaTime;
+
+                if (cubePos.y <= 0.0f)
+                {
+                    cubePos.y = 0.0f;
+                    isJumping = false;
+                    jumpVelocity = 0.0f;
+                }
+            }
+
+            // تحريك الحواجز وفحص التصادم
+            for (int i = 0; i < obstacleCount; i++)
+            {
+                obstacles[i].z += speed * deltaTime;
+
+                if (obstacles[i].z > 2.0f)
+                {
+                    int lane = rand() % 3;
+                    obstacles[i].x = (lane - 1) * 2.0f;
+                    obstacles[i].z = -100.0f;
+                }
+
+                float dx = fabs(cubePos.x - obstacles[i].x);
+                float dy = fabs(cubePos.y - obstacles[i].y);
+                float dz = fabs(cubePos.z - obstacles[i].z);
+
+                if (dx < 0.8f && dy < 1.5f && dz < 0.6f)
+                    gameOver = true;
+            }
+
+            // تحريك العملات وفحص جمعها
             for (int i = 0; i < coinCount; i++)
             {
                 coins[i].z += speed * deltaTime;
+
+                if (coins[i].z > 2.0f)
+                {
+                    int lane = rand() % 3;
+                    coins[i].x = (lane - 1) * 2.0f;
+                    coins[i].y = 0.4f;
+                    coins[i].z = -(rand() % 50 + 20);
+                    coinActive[i] = true;
+                }
+
+                float dx = fabs(cubePos.x - coins[i].x);
+                float dy = fabs(cubePos.y - coins[i].y);
+                float dz = fabs(cubePos.z - coins[i].z);
+
+                if (coinActive[i] && dx < 0.7f && dy < 1.0f && dz < 0.7f)
+                {
+                    coinActive[i] = false;
+                    score++;
+                    std::cout << "Score: " << score << std::endl;
+                }
             }
-        //تحريك المكعب
-        processInput(window);
 
-        for (int i = 0; i < coinCount; i++)
-        {
-            coins[i].z += speed * deltaTime;
-
-            // إذا وصلت عند اللاعب → رجعها
-            if (coins[i].z > 2.0f)
+            // خسارة إذا خرج اللاعب من الطريق
+            if (cubePos.x > roadHalfWidth - cubeHalf ||
+                cubePos.x < -roadHalfWidth + cubeHalf)
             {
-                coins[i].z = -(rand() % 50 + 20);
-
-                int lane = rand() % 3;
-
-                if (lane == 0) coins[i].x = -2.0f;
-                else if (lane == 1) coins[i].x = 0.0f;
-                else coins[i].x = 2.0f;
-
-                coinActive[i] = true;
+                gameOver = true;
             }
-            float dx = abs(cubePos.x - coins[i].x);
-            float dz = abs(cubePos.z - coins[i].z);
-
-            if (coinActive[i] && dx < 0.5f && dz < 0.5f)
-            {
-                coinActive[i] = false; // تختفي
-                score++;               // يزيد العداد
-            }
-
         }
 
+        // لون الـ HUD حسب حالة اللعبة
+        glm::vec3 hudColor = gameOver ?
+            glm::vec3(1.0f, 0.0f, 0.0f) :
+            glm::vec3(0.0f, 1.0f, 0.0f);
 
-        //التصادم
-        for (int i = 0; i < obstacleCount; i++)
-        {
-            float cubeHalf = 0.3f;
-            float obstacleHalf = 0.3f;
-
-            float dx = abs(cubePos.x - obstacles[i].x);
-            float dz = abs(cubePos.z - obstacles[i].z);
-
-            if (dx < (cubeHalf + obstacleHalf + 0.3f) &&   // هامش زيادة
-                dz < (cubeHalf + obstacleHalf))
-            {
-               resetGame(); // 🔥 هون الريستارت
-        break;       // مهم جداً
-            }
-        }if (cubePos.x > roadHalfWidth - cubeHalf ||
-            cubePos.x < -roadHalfWidth + cubeHalf)
-        {
-            resetGame();
-        }
-        
-      
-        
-         // من 0 إلى 1
-        float cycleLength = 300.0f;   // طول الدورة كاملة (ليل + نهار)
-        float transition = 30.0f;     // مدة الانتقال (سرعة التحول)
-
-        float cycle = fmod(distanceTravelled, cycleLength);
-
-        // 🌙 ليل
-        float r, g, b;
-
-        float rNight = 0.05f, gNight = 0.05f, bNight = 0.1f;
-        float rDay = 0.5f, gDay = 0.8f, bDay = 1.0f;
-
-        if (cycle < (cycleLength / 2 - transition / 2))
-        {
-            // 🌙 ليل ثابت
-            r = rNight; g = gNight; b = bNight;
-        }
-        else if (cycle < (cycleLength / 2 + transition / 2))
-        {
-            // 🔄 انتقال ليل → نهار
-            float t = (cycle - (cycleLength / 2 - transition / 2)) / transition;
-
-            r = rNight * (1 - t) + rDay * t;
-            g = gNight * (1 - t) + gDay * t;
-            b = bNight * (1 - t) + bDay * t;
-        }
-        else if (cycle < (cycleLength - transition / 2))
-        {
-            // ☀️ نهار ثابت
-            r = rDay; g = gDay; b = bDay;
-        }
-        else
-        {
-            // 🔄 انتقال نهار → ليل
-            float t = (cycle - (cycleLength - transition / 2)) / transition;
-
-            r = rDay * (1 - t) + rNight * t;
-            g = gDay * (1 - t) + gNight * t;
-            b = bDay * (1 - t) + bNight * t;
-        }
-
-        glClearColor(r, g, b, 1.0f);
+        // تنظيف الشاشة ولون السماء
+        glClearColor(0.4f, 0.7f, 1.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-       
+
         glUseProgram(shaderProgram);
 
-        glm::vec3 cameraOffset = glm::vec3(0.0f, 2.0f, 5.0f); // ارتفاع + مسافة خلف المكعب
+        // الكاميرا تتبع اللاعب
         glm::vec3 cameraPos = cubePos + glm::vec3(0.0f, 4.0f, 12.0f);
-        glm::vec3 cameraTarget = cubePos + glm::vec3(0.0f, 0.0f, 0.0f);
-        
-        
-        // الكاميرا دائماً تتجه للمكعب
-        glm::vec3 cameraDirection = glm::normalize(cameraPos - cameraTarget);
-        glm::vec3 up = glm::vec3(0.0f, 1.0f, 0.0f);
 
-        glm::mat4 view = glm::lookAt(cameraPos, cameraTarget, up);
+        glm::mat4 view = glm::lookAt(cameraPos, cubePos, glm::vec3(0.0f, 1.0f, 0.0f));
 
-        glm::mat4 projection = glm::perspective(glm::radians(45.0f), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.5f, 100.0f);
-        // glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);//
+        glm::mat4 projection = glm::perspective(
+            glm::radians(45.0f),
+            (float)SCR_WIDTH / SCR_HEIGHT,
+            0.1f,
+            100.0f
+        );
 
+        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
 
-        unsigned int viewLoc = glGetUniformLocation(shaderProgram, "view");
-        unsigned int projLoc = glGetUniformLocation(shaderProgram, "projection");
-        glUniformMatrix4fv(viewLoc, 1, GL_FALSE, glm::value_ptr(view));
-        glUniformMatrix4fv(projLoc, 1, GL_FALSE, glm::value_ptr(projection));
-        // --- رسم الطريق ---
-        glm::mat4 roadModel = glm::mat4(1.0f); // الطريق ثابت
-        modelLoc = glGetUniformLocation(shaderProgram, "model");
-        glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(roadModel));
+        glUniform1f(glGetUniformLocation(shaderProgram, "offset"), textureOffset);
+
+        // رسم الطريق
+        glUniform1i(glGetUniformLocation(shaderProgram, "useTexture"), true);
+        glBindTexture(GL_TEXTURE_2D, roadTexture);
+
+        glm::mat4 model = glm::mat4(1.0f);
+        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
 
         glBindVertexArray(roadVAO);
-        glDrawArrays(GL_TRIANGLES, 0, 6); // 6 vertices للطريق
-        // ===== رسم اللاعب =====
-        glm::mat4 model = glm::mat4(1.0f);
-        model = glm::translate(model, cubePos);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
 
-        glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
+        // رسم اللاعب
+        glUniform1i(glGetUniformLocation(shaderProgram, "useTexture"), false);
 
+        model = glm::translate(glm::mat4(1.0f), cubePos);
+        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
 
-        glBindVertexArray(VAO);
+        glBindVertexArray(cubeVAO);
         glDrawArrays(GL_TRIANGLES, 0, 36);
-       
+
+        // رسم الحواجز
         for (int i = 0; i < obstacleCount; i++)
         {
-            obstacles[i].z += speed * deltaTime; // سرعة الحركة
-            if (obstacles[i].z > 2.0f) // وصل للاعب
-            {
-                obstacles[i].z = -100.0f; // رجع لبعيد
+            model = glm::translate(glm::mat4(1.0f), obstacles[i]);
+            model = glm::scale(model, glm::vec3(0.5f, 2.0f, 0.5f));
 
-                // غير المسار (يمين/يسار/وسط)
-                int lane = rand() % 3;
+            glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
 
-                if (lane == 0) obstacles[i].x = -2.0f;
-                else if (lane == 1) obstacles[i].x = 0.0f;
-                else obstacles[i].x = 2.0f;
-            }
-            glm::mat4 obstacleModel = glm::mat4(1.0f);
-
-            obstacleModel = glm::translate(obstacleModel, obstacles[i]);
-
-            // خليها أعمدة
-            obstacleModel = glm::scale(obstacleModel, glm::vec3(0.5f, 2.0f, 0.5f));
-
-            glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(obstacleModel));
-
-            glBindVertexArray(VAO);
+            glBindVertexArray(cubeVAO);
             glDrawArrays(GL_TRIANGLES, 0, 36);
         }
+
+        // رسم العملات باستخدام coin.bmp
+        glUniform1i(glGetUniformLocation(shaderProgram, "useTexture"), true);
+        glBindTexture(GL_TEXTURE_2D, coinTexture);
+        glUniform1f(glGetUniformLocation(shaderProgram, "offset"), 0.0f);
+
         for (int i = 0; i < coinCount; i++)
         {
             if (coinActive[i])
             {
-                glm::mat4 model = glm::mat4(1.0f);
-                model = glm::translate(model, coins[i]);
-                model = glm::scale(model, glm::vec3(0.3f));
+                model = glm::translate(glm::mat4(1.0f), coins[i]);
+                model = glm::scale(model, glm::vec3(0.7f));
 
-                glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(model));
+                glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
 
-                // 🟡 لون العملة
-               
-
-                glDrawArrays(GL_TRIANGLES, 0, 36);
+                glBindVertexArray(quadVAO);
+                glDrawArrays(GL_TRIANGLES, 0, 6);
             }
         }
 
+        // رسم HUD فوق كل شيء
+        glUseProgram(hudProgram);
+        glUniform3fv(glGetUniformLocation(hudProgram, "hudColor"), 1, glm::value_ptr(hudColor));
 
-       
+        glDisable(GL_DEPTH_TEST);
 
-        
+        glBindVertexArray(hudVAO);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+
+        glEnable(GL_DEPTH_TEST);
+
         glfwSwapBuffers(window);
         glfwPollEvents();
     }
 
-    // تنظيف الذاكرة قبل الإغلاق
-    glDeleteVertexArrays(1, &VAO);
-    glDeleteBuffers(1, &VBO);
-    glDeleteProgram(shaderProgram);
-
     glfwTerminate();
     return 0;
 }
+     // التحكم بالكيبورد
+     // =======================
+   void processInput(GLFWwindow* window)
+    {
+    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
+        glfwSetWindowShouldClose(window, true);
 
-// --- معالجة مدخلات لوحة المفاتيح (الأسهم) ---
-void processInput(GLFWwindow* window)
-{  // if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
-     //   glfwSetWindowShouldClose(window, true);
+    // إعادة اللعبة
+    if (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS)
+        resetGame();
 
-    //float cameraSpeed = 2.5f * deltaTime;
+    if (!gameOver)
+    {
+        float sideSpeed = 3.0f * deltaTime;
 
-    //if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS)                         
-        //cameraPos += cameraSpeed * cameraFront;
-    //if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS)
-        //cameraPos -= cameraSpeed * cameraFront;
-    //if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS)
-        //cameraPos -= glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraSpeed;
-    //if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS)
-      //  cameraPos += glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraSpeed;
-    float moveSpeed = 30.0f;
-    if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS)
-        cubePos.z -= moveSpeed * deltaTime;
+        // حركة يمين ويسار
+        if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS)
+            cubePos.x -= sideSpeed;
 
-    if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS)
-        cubePos.z += moveSpeed * deltaTime;
+        if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS)
+            cubePos.x += sideSpeed;
 
-    moveSpeed = 0.03f;
-
-    // يمين (D)
-    if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS)
-        cubePos.x += moveSpeed;
-
-    // يسار (A)
-    if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS)
-        cubePos.x -= moveSpeed;
-
-
-
-
-
-
-
-
+    }
 }
-
-// --- معالجة حركة الفأرة (الالتفاف الحر) ---
-//void mouse_callback(GLFWwindow* window, double xposIn, double yposIn)//
-//{
-    //float xpos = static_cast<float>(xposIn);
-    //float ypos = static_cast<float>(yposIn);
-
-    //if (firstMouse)
-    //{
-       // lastX = xpos;
-        //lastY = ypos;
-      //  firstMouse = false;
-    //}
-
-    //float xoffset = xpos - lastX;
-    //float yoffset = lastY - ypos;
-    //lastX = xpos;
-    //lastY = ypos;
-
-    //float sensitivity = 0.1f;
-    //xoffset *= sensitivity;
-    //yoffset *= sensitivity;
-
-    //yaw += xoffset;
-    //pitch += yoffset;
-
-    //if (pitch > 89.0f)
-      //  pitch = 89.0f;
-    //if (pitch < -89.0f)
-    //    pitch = -89.0f;
-
-    //glm::vec3 front;
-    //front.x = cos(glm::radians(yaw)) * cos(glm::radians(pitch));
-    //front.y = sin(glm::radians(pitch));
-    //front.z = sin(glm::radians(yaw)) * cos(glm::radians(pitch));
-
-   // cameraFront = glm::normalize(front);//
-//}
-
-// --- معالجة تغير حجم النافذة ---
+// تحديث حجم العرض عند تغيير حجم النافذة
 void framebuffer_size_callback(GLFWwindow* window, int width, int height)
 {
     glViewport(0, 0, width, height);
